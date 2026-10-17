@@ -6,6 +6,7 @@
         闭环位置校验功能。软件采用四层模块化架构：驱动层、公共层、硬件接口层、应用层。
 
 项目01-motor-control和02-motor-control-canopen(使用canopen框架实现)，电机控制
+
 1\下机位电机控制板（STM32F407ZGT6，HAL 库）
    - 驱动层：实现 USART、I2C、CAN、TIM (PWM)、GPIO 外设底层驱动；
    - 公共层：实现微秒延时、cJSON数据封装；
@@ -14,6 +15,7 @@
           解析网关 CAN 指令，上报电机运行状态。
 
 项目01-motor-gateway和02-motor-gateway-canopen(使用canopen框架实现)，电机网关   
+
 2. 中间层网关板（STM32F103C8T6，HAL+FreeRTOS）
    - 驱动层：USART、CAN、SPI、W5500 底层驱动；
    - 公共层：微秒延时、cJSON 参数解析；
@@ -22,4 +24,5 @@
             SPI 驱动 W5500，基于 TCP 实现 MQTT 通信，与本地 MQTT 服务器交互，转发网页控制指令与电机状态。
 
 项目Android-motor_console_stepper和H5-motor_console_stepper
+
 3. 上机位android app控制页面：MQTT 客户端，下发电机控制指令，实时展示电机运行状态。
