@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MQTT 控制台</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+        .section {
+            background-color: white;
+            border: 1px solid #ddd;
+            padding: 20px;
+            border-radius: 5px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .form-group {
+            margin-bottom: 15px;
+        }
+        .form-group label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+        .form-group input, .form-group select {
+            width: 100%;
+            padding: 8px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            box-sizing: border-box;
+        }
+        .row {
+            display: flex;
+            gap: 20px;
+        }
+        .row .form-group {
+            flex: 1;
+        }
+        .buttons {
+            display: flex;
+            gap: 10px;
+        }
+        button {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            background-color: #007bff;
+            color: white;
+        }
+        button:disabled {
+            background-color: #cccccc;
+            cursor: not-allowed;
+        }
+        .display-group {
+            margin-bottom: 10px;
+        }
+        .display-group label {
+            font-weight: bold;
+        }
+        .status.stopped {
+            color: red;
+            font-weight: bold;
+        }
+        .status.running {
+            color: green;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- 上半部分：连接设置 -->
+        <div class="section">
+            <h2>连接设置</h2>
+            <div class="form-group">
+                <label for="mqttAddress">MQTT 地址</label>
+                <input type="text" id="mqttAddress" value="127.0.0.1">
+            </div>
+            <div class="row">
+                <div class="form-group">
+                    <label for="topicToGateway">主题（控制台到电机网关）</label>
+                    <input type="text" id="topicToGateway" value="console_to_gateway">
+                </div>
+                <div class="form-group">
+                    <label for="topicFromGateway">主题（电机网关到控制台）</label>
+                    <input type="text" id="topicFromGateway" value="gateway_to_console">
+                </div>
+            </div>
+            <div class="buttons">
+                <button id="connectButton">连接</button>
+                <button id="disconnectButton" disabled>断开</button>
+            </div>
+        </div>
+
+        <!-- 下半部分：电机控制 -->
+        <div class="section">
+            <h2>丝杆步进电机控制</h2>
+            <div class="display-group">
+                <label>前进距离：</label>
+                <input type="number" id="targetDistance" style="width：50px" value="0">
+                <label>（毫米mm）</label>
+            </div>
+            <div class="display-group">
+                <label>最大速度：</label>
+                <input type="number" id="maxSpeed" style="width：50px" value="0">
+                <label>（步/秒sps）</label>
+            </div>
+            <div class="display-group">
+                <label>已行进距离：</label>
+                <span id="curDistance">0</span>
+                <label>（毫米mm）</label>
+            </div>
+            <div class="display-group">
+                <label>当前状态：</label>
+                <span id="currentStatus" class="status stopped">未启动</span>
+            </div>
+            <div class="buttons">
+                <button id="startMotor">启动</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+    <script>
+        let client;
+        let connected = false;
+
+        const connectButton = document.getElementById('connectButton');
+        const disconnectButton = document.getElementById('disconnectButton');
+        const targetDistanceInput = document.getElementById('targetDistance');
+        const maxSpeedInput = document.getElementById('maxSpeed');
+        const currentStatusSpan = document.getElementById('currentStatus');
+        const startMotorButton = document.getElementById('startMotor');
+        const curAngleSpan = document.getElementById('curDistance');
+
+        // 连接按钮点击事件
+        connectButton.addEventListener('click', () => {
+            const mqttAddress = document.getElementById('mqttAddress').value;
+            const topicFromGateway = document.getElementById('topicFromGateway').value;
+
+            // 使用 TCP 协议连接 MQTT
+            client = mqtt.connect(`ws://${mqttAddress}:8083`,{  
+              keepalive: 0  // 单位：秒， 
+          });
+
+            client.on('connect', () => {
+                connected = true;
+                connectButton.disabled = true;
+                disconnectButton.disabled = false;
+                client.subscribe(topicFromGateway, (err) => {
+                    if (err) {
+                        alert('订阅主题失败: ' + err.message);
+                    }
+                });
+                // 连接成功后不发送任何JSON消息
+            });
+
+            // 处理连接失败并弹出提示
+            client.on('error', (err) => {
+                alert('连接失败: ' + err.message);
+                connected = false;
+                connectButton.disabled = false;
+                disconnectButton.disabled = true;
+            });
+
+            client.on('message', (topic, message) => {
+                const data = JSON.parse(message.toString());
+                console.log("data = " + data);
+                // currentSpeedSpan.textContent = data.motor_speed; // 移除
+                if (typeof data.cur_distance !== 'undefined') {
+                    curAngleSpan.textContent = data.cur_distance;
+                }
+                // motor_status 为 "on" 或 "off"
+                if (data.motor_status === 'on') {
+                    currentStatusSpan.textContent = '运行中';
+                    currentStatusSpan.className = 'status running';
+                } else {
+                    currentStatusSpan.textContent = '已停止';
+                    currentStatusSpan.className = 'status stopped';
+                }
+
+            });
+        });
+
+        disconnectButton.addEventListener('click', () => {
+            if (client && connected) {
+                // 断开时不发送任何JSON消息，直接断开连接
+                client.end(() => {
+                    connected = false;
+                    connectButton.disabled = false;
+                    disconnectButton.disabled = true;
+                });
+            }
+        });
+
+        // 移除 increaseSpeedButton、decreaseSpeedButton、stopMotorButton 相关事件
+
+        startMotorButton.addEventListener('click', () => {
+            const distance = parseInt(targetDistanceInput.value);
+            const maxSpeed = parseInt(maxSpeedInput.value);
+            sendMotorCommand('on', distance, maxSpeed);
+        });
+
+        function sendMotorCommand(status, distance, maxSpeed) {
+            if (!connected || !client) {
+                alert('请先连接 MQTT');
+                return;
+            }
+            const topicToGateway = document.getElementById('topicToGateway').value;
+            console.log('status', status);
+            console.log('distance', distance);
+            console.log('maxSpeed', maxSpeed);
+            const message = {
+                motor_status: status,
+                target_distance: distance,
+                max_speed: maxSpeed
+            };
+
+            client.publish(topicToGateway, JSON.stringify(message), (err) => {
+                if (err) {
+                    alert('发送消息失败: ' + err.message);
+                }
+            });
+        }
+    </script>
+</body>
+</html>
