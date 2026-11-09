@@ -1,7 +1,10 @@
 # motor-project
 搭建一套 STM32 网关 + STM32 电机控制器+上位机 (Android/html) 三层分布式运动控制系统， 实现步进电机丝杆远程运动控制、位置闭环校验与状态监控。软件采用四层模块化分层架构开发。
 
-机械结构<img width="242" height="182" alt="image" src="https://github.com/user-attachments/assets/96238463-16b4-4c0d-820e-d65f10f8925a" />
+机械结构
+<img width="242" height="182" alt="image" src="https://github.com/user-attachments/assets/96238463-16b4-4c0d-820e-d65f10f8925a" />
+
+
 1）电机参数
 类型	详情
 型号	57SM110 步进电机
