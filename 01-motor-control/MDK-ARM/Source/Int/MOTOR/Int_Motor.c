@@ -8,6 +8,17 @@
 // 点击参数
 MotorAttr motor_attr;
 
+// 编码器校验：ABZ 1024线，TIM1 编码模式 TI12 四倍频 => 4096 计数/圈
+#define ENCODER_CNT_PER_REV (1024 * 4)
+// 编码器校验：连续无位移判堵转/编码器失效的时间（TIM3 为 1ms 周期）
+#define ENCODER_STALL_MS 1000
+
+// 编码器增量累计（带符号，支持双向计数与 16 位回绕）
+static uint16_t s_encLastCnt = 0;
+static int32_t s_encTotalCnt = 0;
+static uint32_t s_encLastStep = 0;
+static uint16_t s_encStallMs = 0;
+
 /**
  * @brief 设置方向
  */
@@ -36,34 +47,34 @@ void __Int_Motor_Set_Rev(uint8_t rev)
   motor_attr.step.current_step = 0;
 
   // 设置速度
-  // double vMax = BASE_STEP * MOTOR_SPEED_6X;
-  // double vInit = motor_attr.speed.init_speed;
-  // motor_attr.speed.target_speed = vMax;                    // 设置最大速度
-  // motor_attr.speed.current_speed = vInit;                  // 当前速度为初始速度
-  // motor_attr.speed.acc_speed = BASE_STEP * MOTOR_SPEED_2X; // 加速度
-  // motor_attr.speed.dec_speed = BASE_STEP * MOTOR_SPEED_2X; // 减速度
+  double vMax = BASE_STEP * MOTOR_SPEED_6X;
+  double vInit = motor_attr.speed.init_speed;
+  motor_attr.speed.target_speed = vMax;                    // 设置最大速度
+  motor_attr.speed.current_speed = vInit;                  // 当前速度为初始速度
+  motor_attr.speed.acc_speed = BASE_STEP * MOTOR_SPEED_2X; // 加速度
+  motor_attr.speed.dec_speed = BASE_STEP * MOTOR_SPEED_2X; // 减速度
 
-  // // 计算加速步数，减速步数，
-  // motor_attr.step.acc_step = (vMax * vMax - vInit * vInit) / (2 * motor_attr.speed.acc_speed);
-  // motor_attr.step.dec_step = (vMax * vMax - vInit * vInit) / (2 * motor_attr.speed.dec_speed);
-  // // 匀速步数
-  // if (motor_attr.step.target_step >= (motor_attr.step.acc_step + motor_attr.step.dec_step)) {
-  //   // 有匀速步数
-  //   motor_attr.step.const_step = motor_attr.step.target_step - (motor_attr.step.acc_step + motor_attr.step.dec_step);
-  // } else {
-  //   // 没有匀速步数
-  //   motor_attr.step.const_step = 0;
-  //   // 需要重新计算加速步数和减速步数
-  //   double temp = 2 * motor_attr.speed.acc_speed * motor_attr.speed.dec_speed * motor_attr.step.target_step;
-  //   double vNewMax2 = vInit * vInit + temp / (motor_attr.speed.acc_speed + motor_attr.speed.dec_speed);
-  //   motor_attr.step.acc_step = (vNewMax2 - vInit * vInit) / (2 * motor_attr.speed.acc_speed);
-  //   motor_attr.step.dec_step = motor_attr.step.target_step - motor_attr.step.acc_step;
-  // }
+  // 计算加速步数，减速步数，
+  motor_attr.step.acc_step = (uint32_t)((vMax * vMax - vInit * vInit) / (2 * motor_attr.speed.acc_speed));
+  motor_attr.step.dec_step = (uint32_t)((vMax * vMax - vInit * vInit) / (2 * motor_attr.speed.dec_speed));
+  // 匀速步数
+  if (motor_attr.step.target_step >= (motor_attr.step.acc_step + motor_attr.step.dec_step)) {
+    // 有匀速步数
+    motor_attr.step.const_step = motor_attr.step.target_step - (motor_attr.step.acc_step + motor_attr.step.dec_step);
+  } else {
+    // 没有匀速步数
+    motor_attr.step.const_step = 0;
+    // 需要重新计算加速步数和减速步数
+    double temp = 2 * motor_attr.speed.acc_speed * motor_attr.speed.dec_speed * motor_attr.step.target_step;
+    double vNewMax2 = vInit * vInit + temp / (motor_attr.speed.acc_speed + motor_attr.speed.dec_speed);
+    motor_attr.step.acc_step = (uint32_t)((vNewMax2 - vInit * vInit) / (2 * motor_attr.speed.acc_speed));
+    motor_attr.step.dec_step = motor_attr.step.target_step - motor_attr.step.acc_step;
+  }
 
   printf(" target step = %d \n", motor_attr.step.target_step);
-  // printf(" acc step = %d \n", motor_attr.step.acc_step);
-  // printf(" const step = %d \n", motor_attr.step.const_step);
-  // printf(" dec step = %d \n", motor_attr.step.dec_step);
+  printf(" acc step = %d \n", motor_attr.step.acc_step);
+  printf(" const step = %d \n", motor_attr.step.const_step);
+  printf(" dec step = %d \n", motor_attr.step.dec_step);
 }
 
 /**
@@ -129,6 +140,12 @@ void Int_Motor_Start_By_Revolution(MotorDir dir)
 
   // 启动编码器
   Int_Encoder_Start();
+  // 编码器计数清零，作为本次校验起点
+  __HAL_TIM_SetCounter(&htim1, 0);
+  s_encLastCnt = 0;
+  s_encTotalCnt = 0;
+  s_encLastStep = 0;
+  s_encStallMs = 0;
   HAL_TIM_Base_Start_IT(&htim3);
 
   // 启动定时器
@@ -145,6 +162,8 @@ void Int_Motor_Stop(void)
 {
   // // 关闭定时器
   HAL_TIM_PWM_Stop_IT(&htim2, TIM_CHANNEL_1);
+  // 关闭编码器校验定时器
+  HAL_TIM_Base_Stop_IT(&htim3);
   // 关闭使能
   HAL_GPIO_WritePin(MOTOR_ALL_EN_GPIO_Port, MOTOR_ALL_EN_Pin, GPIO_PIN_RESET);
   // 状态重置
@@ -160,29 +179,49 @@ void Int_Motor_Stop(void)
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
   if (htim->Instance == TIM3) {
-    // 获取编码器的值
+    // 仅在按圈运动时做编码器校验
+    if (motor_attr.state != MOTOR_STATE_RUNNING_REVALUTION) {
+      return;
+    }
+
+    // 获取编码器的值，累计带符号增量（双向计数与 16 位回绕通用）
     uint16_t cnt = __HAL_TIM_GetCounter(&htim1);
+    s_encTotalCnt += (int16_t)(cnt - s_encLastCnt);
+    s_encLastCnt = cnt;
 
-    // if (motor_attr.dir == MOTOR_DIR_TO_HAND) {
-    //   // 转换为实际电机的前进步数
-    //   uint16_t encoder_step = cnt * 1600 / 4096;
+    // 转换为实际电机的步数（取绝对值，两个方向通用）
+    uint32_t enc_abs = (s_encTotalCnt < 0) ? (uint32_t)(-s_encTotalCnt) : (uint32_t)s_encTotalCnt;
+    uint32_t encoder_step = enc_abs * BASE_STEP / ENCODER_CNT_PER_REV;
 
-    // if (encoder_step > motor_attr.step.current_step) {
-    //   if ((encoder_step - motor_attr.step.current_step) > 5) {
-    //     motor_attr.step.current_step = encoder_step;
-    //   }
-    // } else {
-    //   if ((motor_attr.step.current_step - encoder_step) > 5) {
-    //     motor_attr.step.current_step = encoder_step;
-    //   }
-    // }
-    //  printf("%d,%d,%d\n",cnt, encoder_step, motor_attr.step.current_step);
-    //     if (motor_attr.step.current_step >= motor_attr.step.target_step) {
-    //       Int_Motor_Stop();
-    //     }
-    //   } else {
+    // 与指令步数比对，偏差超过 5 步以编码器为准（校验丢步/多走）
+    if (encoder_step > motor_attr.step.current_step) {
+      if ((encoder_step - motor_attr.step.current_step) > 5) {
+        motor_attr.step.current_step = encoder_step;
+      }
+    } else {
+      if ((motor_attr.step.current_step - encoder_step) > 5) {
+        motor_attr.step.current_step = encoder_step;
+      }
+    }
+    // printf("%d,%d,%d\n", (int)s_encTotalCnt, (int)encoder_step, (int)motor_attr.step.current_step);
 
-    //   }
+    // 堵转/编码器失效保护：连续 1s 编码器无位移则停止，防止永远追不到目标
+    if (encoder_step == s_encLastStep) {
+      s_encStallMs++;
+      if (s_encStallMs >= ENCODER_STALL_MS) {
+        printf("encoder stall: cmd=%u enc=%u\n", (unsigned int)motor_attr.step.current_step, (unsigned int)encoder_step);
+        Int_Motor_Stop();
+        return;
+      }
+    } else {
+      s_encStallMs = 0;
+      s_encLastStep = encoder_step;
+    }
+
+    // 实际位移达到目标步数即停止
+    if (motor_attr.step.current_step >= motor_attr.step.target_step) {
+      Int_Motor_Stop();
+    }
   }
 }
 
@@ -197,29 +236,28 @@ void HAL_TIM_PWM_PulseFinishedCallback(TIM_HandleTypeDef *htim)
       motor_attr.step.current_step++;
       if (motor_attr.step.current_step >= motor_attr.step.target_step) {
         Int_Motor_Stop();
+      } else {
+        if (motor_attr.step.current_step < motor_attr.step.acc_step) {
+          // 加速：恒加速度离散积分 dv = a/v（每走一步加一次）
+          motor_attr.speed.current_speed += (motor_attr.speed.acc_speed / motor_attr.speed.current_speed);
+          // 钳位，防止离散积分超过最大速度
+          if (motor_attr.speed.current_speed > motor_attr.speed.target_speed) {
+            motor_attr.speed.current_speed = motor_attr.speed.target_speed;
+          }
+          __Int_Motor_Set_Speed((uint16_t)motor_attr.speed.current_speed);
+        } else {
+          if ((motor_attr.step.const_step == 0) ||
+              (motor_attr.step.current_step >= (motor_attr.step.acc_step + motor_attr.step.const_step))) {
+            // 减速：dv = a/v
+            motor_attr.speed.current_speed -= (motor_attr.speed.dec_speed / motor_attr.speed.current_speed);
+            // 钳位，防止速度低于初始速度（也避免除0）
+            if (motor_attr.speed.current_speed < motor_attr.speed.init_speed) {
+              motor_attr.speed.current_speed = motor_attr.speed.init_speed;
+            }
+            __Int_Motor_Set_Speed((uint16_t)motor_attr.speed.current_speed);
+          }
+        }
       }
-      // else {
-      //   if (motor_attr.step.current_step < motor_attr.step.acc_step) {
-      //     // 加速
-      //     motor_attr.speed.current_speed += (motor_attr.speed.acc_speed / motor_attr.speed.current_speed);
-      //     __Int_Motor_Set_Speed(motor_attr.speed.current_speed);
-      //   } else {
-      //     if (motor_attr.step.const_step == 0) {
-      //       // 减速
-      //       motor_attr.speed.current_speed -= (motor_attr.speed.dec_speed  / motor_attr.speed.current_speed);
-      //       __Int_Motor_Set_Speed(motor_attr.speed.current_speed);
-      //     } else {
-      //       if (motor_attr.step.current_step > (motor_attr.step.acc_step + motor_attr.step.const_step)) {
-      //         // 减速
-      //         motor_attr.speed.current_speed -= (motor_attr.speed.dec_speed / motor_attr.speed.current_speed);
-      //         __Int_Motor_Set_Speed(motor_attr.speed.current_speed);
-      //       }
-      //     }
-      //   }
-      //   // if (motor_attr.step.current_step % 1600 == 0) {
-      //   //   printf("cur_speed %d\n", motor_attr.speed.current_speed);
-      //   // }
-      // }
     } else if (motor_attr.state == MOTOR_STATE_RUNNING_POINT) { // 点动
       // 按键3向电机移动抬起，和按键4向手轮移动抬起
       if (((HAL_GPIO_ReadPin(KEY3_GPIO_Port, KEY3_Pin) == GPIO_PIN_SET) && (motor_attr.dir == MOTOR_DIR_TO_MOTOR)) ||
